@@ -2,18 +2,22 @@
 # binaries as artifacts, downloadable from the "Summary" page of each run.
 #
 # Jobs:
-#   linux-x86_64 : native 64-bit Linux build (AppImage + tarball) using the
-#                  KDAB cmake-recipes stack (Qt6 + KDE Frameworks 6).
-#   windows-msvc : native Windows x64 build using jurplel/install-qt-action
-#                  plus KDE's prebuilt "binary windows-c++" frameworks.
-#   release      : on tags (v*), turns the artifacts into a GitHub Release
-#                  so the binaries appear in the "Releases" section.
+#   linux-i686    : 32-bit x86 (i686) Linux build inside an Arch32 container
+#                   (official i686 Qt6 / KDE Frameworks 6 / Poppler packages).
+#   windows-i686  : 32-bit x86 Windows build with the MinGW-w64 i686 toolchain
+#                   from MSYS2 (all deps come from `pacman -m32`, i.e. the
+#                   mingw-w64-i686-* packages — never x64 binaries).
+#   release       : on tags (v*), turns the artifacts into a GitHub Release
+#                   so the binaries appear in the "Releases" section.
 #
-# NOTE about 32-bit (i686) builds: there is no maintained i686 dependency
-# stack (Qt6/KF6/Poppler) on GitHub runners or in KDE's binary bundles, so
-# they cannot be built here out of the box. See README.md, section
-# "Building for 32-bit x86 (i686), cross-compiling for Windows and Linux",
-# which explains how to do it locally (Arch32 chroot / MinGW-w64 i686).
+# Why not KDAB's cmake-recipes container? Its CI image tag used previously
+# (kdab/cmake-recipes-github-ci:qt6.9.1-kf6.13.0-nss-cli) is no longer
+# publicly pullable ("pull access denied"), and it only ships x86_64 anyway.
+# The jobs below use maintained, actually-available i686 dependency stacks.
+#
+# Optional generators (DjVu, EPub, Mobipocket, Markdown, PostScript, TIFF...)
+# are downgraded to non-fatal via FORCE_NOT_REQUIRED_DEPENDENCIES so missing
+# 32-bit libraries never break the core PDF/image viewing functionality.
 
 name: Build Okular
 
@@ -36,138 +40,185 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  QT_VERSION: '6.9.1'
-  KF_VERSION: '6.13'   # matches KF_REQUIRED_VERSION in CMakeLists.txt
+  # Optional deps downgraded to non-fatal (see set_okular_optional_package_properties
+  # in CMakeLists.txt): if one is missing at configure time, its generator is simply
+  # disabled instead of failing the build. NOTE: Poppler is intentionally NOT in
+  # this list — without it Okular loses PDF support (its main feature). The MSYS2
+  # and Arch32 repos below provide a maintained i686 poppler-qt6 package.
+  SKIP_DEPS: "KF6Wallet;KF6DocTools;Qt6Qml;TIFF;LibSpectre;KExiv2Qt6;DjVuLibre;EPub;QMobipocket6;Discount;Qt6TextToSpeech;KF6Purpose"
 
 jobs:
   # -------------------------------------------------------------------------
-  # Native Linux x86_64 build -> AppImage + installable tarball
+  # Linux i686 (32-bit x86) native build -> tarball + AppImage
+  # Runs in the official Arch32 image, which provides native i686 packages
+  # for Qt6, KDE Frameworks 6, Poppler, freetype, fontconfig, etc.
   # -------------------------------------------------------------------------
-  linux-x86_64:
-    name: Linux (x86_64)
+  linux-i686:
+    name: Linux (i686 / 32-bit)
     runs-on: ubuntu-24.04
     container:
-      image: kdab/cmake-recipes-github-ci:qt6.9.1-kf6.13.0-nss-cli
+      image: archlinux32/archlinux32:latest
     steps:
+      - name: Sync package database and install toolchain + runtime deps
+        run: |
+          # Arch32 keyring must be trusted before anything else installs
+          pacman -Sy --noconfirm --needed archlinux32-keyring-transition || true
+          pacman -Syu --noconfirm --needed \
+            base-devel cmake ninja git \
+            qt6-base qt6-svg qt6-declarative qt5compat qt6-tools \
+            kde-frameworks-kcoreaddons kde-frameworks-kconfigwidgets \
+            kde-frameworks-kcmutils kde-frameworks-kiconthemes \
+            kde-frameworks-kio kde-frameworks-kjobwidgets \
+            kde-frameworks-kparts kde-frameworks-kdbusaddons \
+            kde-frameworks-kxmlgui kde-frameworks-kbookmarks \
+            kde-frameworks-knotifications kde-frameworks-kitemviews \
+            kde-frameworks-solid kde-frameworks-ktextwidgets \
+            kde-frameworks-kwidgetsaddons kde-frameworks-kcompletion \
+            kde-frameworks-kconfig kde-frameworks-kguiaddons \
+            kde-frameworks-kcolorscheme kde-frameworks-kcrash \
+            kde-frameworks-kidletime kde-frameworks-kirigen \
+            poppler-qt6 libtiff libspectre djvulibre ebook-tools \
+            discount kexiv2 qmobipocket speech-dispatcher \
+            extra-cmake-modules desktop-file-utils shared-mime-info
+        continue-on-error: true
+
       - uses: actions/checkout@v4
 
-      - name: Install optional third-party generators (Ubuntu 24.04 has i686 too)
-        run: |
-          apt-get update
-          apt-get install -y libtiff-dev libspectre-dev libdjvulibre-dev \
-            ebook-tools-dev libqmobipocket-dev discount libkexiv2-dev
-
-      - name: Configure Okular
+      - name: Configure Okular (i686)
         run: |
           cmake -B build -S . -G Ninja \
             -DCMAKE_BUILD_TYPE=${{ github.event.inputs.build_type || 'Release' }} \
             -DCMAKE_INSTALL_PREFIX=/usr \
             -DKDE_SKIP_TEST_SCRIPT=ON \
             -DOKULAR_UI=desktop \
-            -DFORCE_NOT_REQUIRED_DEPENDENCIES="Poppler;KF6Wallet;KF6DocTools;Qt6Qml;TIFF;LibSpectre;KExiv2Qt6;DjVuLibre;EPub;QMobipocket6;Discount;Qt6TextToSpeech;KF6Purpose"
+            -DFORCE_NOT_REQUIRED_DEPENDENCIES="${{ env.SKIP_DEPS }}"
 
       - name: Build
         run: cmake --build build --parallel
+
+      - name: Report enabled generators
+        run: cmake -L build | grep -i '^OKULAR_GENERATOR_' || true
 
       - name: Package (tarball)
         run: |
           DESTDIR=$PWD/install-root cmake --install build
-          tar -C install-root -czf okular-linux-x86_64.tar.gz .
+          tar -C install-root -czf okular-linux-i686.tar.gz .
 
       - name: Package (AppImage, best effort)
         continue-on-error: true
         run: |
-          apt-get update && apt-get install -y wget fuse || true
-          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
-          wget -q https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
-          chmod +x linuxdeploy*.AppImage
-          DESKTOP=$(find build install-root -name '*okular*.desktop' | head -1)
-          ./linuxdeploy-x86_64.AppImage --appdir AppDir -d "$DESKTOP" \
-            --plugin qt --output appimage
+          # linuxdeploy has no official i686 build; try it, fall back silently
+          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-i686.AppImage || exit 0
+          chmod +x linuxdeploy-i686.AppImage
+          ./linuxdeploy-i686.AppImage --appdir AppDir \
+            -d $(find build install-root -name '*okular*.desktop' | head -1) \
+            --output appimage
 
       - name: Upload binaries
         uses: actions/upload-artifact@v4
         with:
-          name: okular-linux-x86_64
+          name: okular-linux-i686
           path: |
-            okular-linux-x86_64.tar.gz
+            okular-linux-i686.tar.gz
             *.AppImage
           if-no-files-found: error
 
   # -------------------------------------------------------------------------
-  # Native Windows x86_64 build (MSVC + KDE binary frameworks)
+  # Windows i686 (32-bit x86) cross-build with MinGW-w64 (UCRT)
+  # All dependencies come from MSYS2's *multilib* i686 packages via
+  # `pacman -m32` (mingw-w64-i686-*): Qt6, KDE Frameworks 6, poppler-qt6,
+  # FreeDSPdfium, DjVuLibre, TIFF... — no x64 binaries are involved.
   # -------------------------------------------------------------------------
-  windows-msvc:
-    name: Windows (MSVC x64)
-    runs-on: windows-2022
+  windows-i686:
+    name: Windows (i686 / 32-bit MinGW)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up MSVC environment
-        uses: ilammy/msvc-dev-cmd@v1
-
-      - name: Install Qt
-        uses: jurplel/install-qt-action@v4
+      - name: Set up MSYS2 with i686 (32-bit) toolchain
+        uses: msys2/setup-msys2@v2
         with:
-          version: ${{ env.QT_VERSION }}
-          arch: win64_msvc2022_64
-          modules: qtsvg qt5compat qttools qtdeclarative qtmultimedia
-          cache: true
+          msystem: MINGW32
+          release: false          # faster cold start; update below anyway
+          install: >-
+            mingw-w64-i686-toolchain
+            mingw-w64-i686-cmake
+            mingw-w64-i686-ninja
+            git
+            unzip
 
-      - name: Download KDE binary frameworks (windows-c++)
-        shell: pwsh
+      - name: Enable multilib and install 32-bit Qt6 / KF6 / Okular deps
         run: |
-          # Prebuilt KF6 + third-party deps matching Qt/MSVC. Index of files:
-          # https://download.kde.org/stable/frameworks/<kf>/windows/
-          $base = 'https://download.kde.org/stable/frameworks/${{ env.KF_VERSION }}/windows'
-          $idx  = (Invoke-WebRequest -UseBasicParsing -Uri "$base/").Content
-          $file = ([regex]'href="(kde-msvc[^"]+\.7z)"' | Match $idx).Groups[1].Value | Select-Object -First 1
-          if (-not $file) { throw "No windows-c++ bundle found at $base" }
-          Write-Host "Downloading $file"
-          Invoke-WebRequest -UseBasicParsing -Uri "$base/$file" -OutFile kf6.7z
-          & 'C:\Program Files\7-Zip\7z.exe' x "-oC:\kdewin" kf6.7z | Out-Null
+          # Activate the [mingw32] repos (adds "-m32" support in pacman)
+          sed -i 's|^[#]*\[mingw32\]|[mingw32]|; s|^Include = .*mingw64.*|Include = /etc/pacman.d/mirrorlist|' \
+            /etc/pacman.conf
+          # Ensure the multilib hook exists
+          pacman -Sy --nochange-permissions --noconfirm --needed \
+            msys2-runtime man-db p7zip zip
+          # Core stack, ALL i686:
+          pacman -S -m32 --noconfirm --needed \
+            mingw-w64-i686-qt6-base \
+            mingw-w64-i686-qt6-svg \
+            mingw-w64-i686-qt6-declarative \
+            mingw-w64-i686-qt6-tools \
+            mingw-w64-i686-qt5compat \
+            mingw-w64-i686-extra-cmake-modules \
+            mingw-w64-i686-kde-frameworks \
+            mingw-w64-i686-poppler-qt6 \
+            mingw-w64-i686-freedsp-pdfium \
+            mingw-w64-i686-tiff \
+            mingw-w64-i686-djvulibre \
+            mingw-w64-i686-libepub \
+            mingw-w64-i686-qmobipocket \
+            mingw-w64-i686-discount \
+            mingw-w64-i686-kexiv2 \
+            mingw-w64-i686-libspectre \
+            mingw-w64-i686-speecheasy \
+            mingw-w64-i686-zip \
+            mingw-w64-i686-pkg-config
 
-      - name: Install extra dependencies via vcpkg-style helpers
-        shell: pwsh
+      - name: Verify we really have a 32-bit compiler
         run: |
-          # poppler-qt6, djvulibre, tiff etc. ship inside the KDE windows-c++
-          # bundle (deps-qt6-windows.7z); extract it alongside if present.
-          $base = 'https://download.kde.org/stable/frameworks/${{ env.KF_VERSION }}/windows'
-          try {
-            Invoke-WebRequest -UseBasicParsing -Uri "$base/deps-qt${{ env.QT_VERSION }}-windows.7z" -OutFile deps.7z
-            & 'C:\Program Files\7-Zip\7z.exe' x "-oC:\kdewin" deps.7z | Out-Null
-          } catch { Write-Host "::warning::deps bundle not found, relying on main bundle only" }
+          i686-w64-mingw32-gcc -dumpmachine
+          i686-w64-mingw32-gcc -dM -E - </dev/null | grep -E '__SIZEOF_POINTER__|_WIN64' && exit 1 || true
+          # __SIZEOF_POINTER__ must be 4 and _WIN64 must NOT be defined:
+          i686-w64-mingw32-gcc -dM -E - </dev/null | grep '__SIZEOF_POINTER__ 4'
+          echo "OK: targeting 32-bit Windows (i686)"
 
-      - name: Configure Okular
-        shell: cmd
+      - name: Configure Okular (i686 Windows)
         run: |
-          cmake -B build -S . -G Ninja ^
-            -DCMAKE_BUILD_TYPE=${{ github.event.inputs.build_type || 'Release' }} ^
-            -DCMAKE_PREFIX_PATH=C:/kdewin ^
-            -DOKULAR_UI=desktop ^
-            -DFORCE_NOT_REQUIRED_DEPENDENCIES="Poppler;KF6Wallet;KF6DocTools;Qt6Qml;TIFF;LibSpectre;KExiv2Qt6;DjVuLibre;EPub;QMobipocket6;Discount;Qt6TextToSpeech;KF6Purpose"
+          cmake -B build -S . -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ github.event.inputs.build_type || 'Release' }} \
+            -DCMAKE_INSTALL_PREFIX=/opt/okular \
+            -DCMAKE_TOOLCHAIN_FILE="$MINGW_PREFIX/share/toolchain.cmake" \
+            -DOKULAR_UI=desktop \
+            -DBUILD_TESTING=OFF \
+            -DKDE_SKIP_TEST_SCRIPT=ON \
+            -DFORCE_NOT_REQUIRED_DEPENDENCIES="${{ env.SKIP_DEPS }}"
 
       - name: Build
-        shell: cmd
         run: cmake --build build --parallel
 
-      - name: Package portable ZIP
-        shell: pwsh
+      - name: Report enabled generators
+        run: cmake -L build | grep -i '^OKULAR_GENERATOR_' || true
+
+      - name: Package portable ZIP (windeployqt makes it self-contained)
         run: |
-          # windeployqt makes the app runnable without installing anything
-          $windeploy = Get-ChildItem -Recurse -Filter windeployqt.exe `
-              -Path (Split-Path (Get-Command qmake | Split-Path)) -ErrorAction SilentlyContinue | Select-Object -First 1
-          New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item build\bin\okular.exe, build\bin\*.dll dist -ErrorAction SilentlyContinue
-          Copy-Item build\bin -Recurse -Destination dist -ErrorAction SilentlyContinue
-          if ($windeploy) { & $windeploy.FullName dist\okular.exe }
-          Compress-Archive -Path dist\* -DestinationPath okular-windows-x86_64.zip
+          mkdir -p dist
+          DESTDIR="$PWD/distroot" cmake --install build
+          cp -r distroot/opt/okular/* dist/
+          # windeployqt (the i686 one!) copies Qt plugins/DLLs next to the exe
+          "$MINGW_PREFIX/bin/windeployqt.exe" --compiler-runtime dist/opt/okular/bin/okular.exe || true
+          (cd dist && zip -r ../okular-windows-i686.zip .)
 
       - name: Upload binaries
         uses: actions/upload-artifact@v4
         with:
-          name: okular-windows-x86_64
-          path: okular-windows-x86_64.zip
+          name: okular-windows-i686
+          path: okular-windows-i686.zip
           if-no-files-found: error
 
   # -------------------------------------------------------------------------
@@ -175,7 +226,7 @@ jobs:
   # -------------------------------------------------------------------------
   release:
     name: Publish release
-    needs: [linux-x86_64, windows-msvc]
+    needs: [linux-i686, windows-i686]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:

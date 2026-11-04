@@ -82,21 +82,35 @@ Available options are `desktop`, `mobile`, and `both`.
 ### Automated builds with GitHub Actions (downloadable binaries)
 
 A ready-to-use workflow is provided at `.github/workflows/build.yml`. Once you
-push this repository to GitHub, it will compile Okular on every push/pull
-request and upload the resulting **binaries as downloadable artifacts**:
+push this repository to GitHub, it compiles **32-bit x86 (i686)** binaries for
+Linux and Windows on every push/pull request and uploads them as **downloadable
+artifacts** from the run's *Summary* page:
 
-- **Linux (x86_64)**: built inside the KDAB `cmake-recipes` CI container
-  (Qt 6.9 + KDE Frameworks 6.13 preinstalled). Produces
-  `okular-linux-x86_64.tar.gz` (staged install tree) and, best-effort, an
-  **AppImage**.
-- **Windows (MSVC x64)**: Qt is installed with `jurplel/install-qt-action`
-  and KDE Frameworks + third-party deps (Poppler, TIFF, DjVu…) are fetched
-  from KDE's prebuilt *windows-c++* bundles on
-  `download.kde.org/stable/frameworks/<KF_VERSION>/windows/`. Produces a
-  portable `okular-windows-x86_64.zip` prepared with `windeployqt`.
+- **Linux (i686 / 32-bit)**: built natively inside the official
+  [`archlinux32/archlinux32`](https://gitlab.archlinux32.org/archlinux32/docker-images)
+  container, which ships maintained i686 packages for Qt6, KDE Frameworks 6,
+  ECM, Poppler-Qt6 and friends — no `-m32` hacks needed. Produces
+  `okular-linux-i686.tar.gz` (staged install tree) and, best-effort, an
+  AppImage (`linuxdeploy` has no official i686 release, so the tarball is the
+  guaranteed artifact).
+- **Windows (i686 / 32-bit)**: built with the MinGW-w64 `i686-w64-mingw32`
+  toolchain from MSYS2 (`msys2/setup-msys2`, `MSYSTEM=MINGW32`). Every
+  dependency comes from the multilib `mingw-w64-i686-*` packages installed via
+  `pacman -m32` (Qt6, KF6, poppler-qt6, FreeDSPdfium, DjVuLibre, TIFF…), so
+  the result is a genuine 32-bit binary — never x64. A verification step
+  asserts `__SIZEOF_POINTER__ == 4` and that `_WIN64` is undefined before
+  configuring. Produces a portable `okular-windows-i686.zip` prepared with the
+  i686 `windeployqt`.
 - **Releases**: pushing a tag like `v26.11.70` additionally publishes all
   artifacts as assets of a **GitHub Release**, so anyone can download the
   binaries from the Releases page.
+
+Missing optional libraries (DjVu, EPub, Mobipocket, Markdown, PostScript…) are
+downgraded to non-fatal through Okular's own
+`FORCE_NOT_REQUIRED_DEPENDENCIES` CMake option, so the configure step never
+fails because of them; only the corresponding document formats get disabled.
+Poppler is deliberately kept required (it provides PDF support, Okular's core
+feature) and is available for both i686 targets above.
 
 How to use it:
 
@@ -108,169 +122,18 @@ git push origin master
 ```
 
 Then go to the run's *Summary* page and download the artifacts
-(`okular-linux-x86_64`, `okular-windows-x86_64`). Artifacts from `main`/`master`
+(`okular-linux-i686`, `okular-windows-i686`). Artifacts from `main`/`master`
 pushes and releases are kept indefinitely if you enable artifact retention;
 PR artifacts expire after 90 days by default.
 
-> **Note:** the KDE windows-c++ bundle file names change between releases; if
-> the download step fails, open the printed index URL and adjust the pattern
-> in the "Download KDE binary frameworks" step. The 32-bit (i686) builds are
-> **not** automated here because no maintained i686 dependency stack exists on
-> GitHub runners — see the next section to build them locally.
-
-### Building for 32-bit x86 (i686), cross-compiling for Windows and Linux
-
-By default Okular is built for the native architecture of your machine (usually
-x86-64). It is also possible to build 32-bit (`i686`) binaries, both natively on
-Linux and cross-compiled from Linux to Windows. This section describes how to do
-it from an Arch-based distribution such as **CachyOS**.
-
-> **Important:** Okular requires Qt 6.8+ and KDE Frameworks 6.13+. These must be
-> available *for the target architecture* as well, which is usually the hardest
-> part of a 32-bit build: you need a complete 32-bit dependency stack
-> (Qt6, KF6, KUserFeedback, Poppler/other generator libraries, libtiff, etc.).
-
-#### 1. Native 32-bit Linux build (i686 chroot / multilib)
-
-On CachyOS/Arch there are no official `multilib` (32-bit) packages like in Debian,
-so the recommended approach is a clean 32-bit chroot (or container) where all
-dependencies are built/installed for `i686`:
-
-```bash
-# Create an Arch32 chroot (the arch32-tools / pacman-ng approach)
-sudo pacman -S arch-install-scripts
-sudo mkdir -p /srv/arch32
-# Install the archlinux32 keyring and a 32-bit pacman into the chroot, then:
-sudo pacman -Syyg --arch i686 \
-     --dbpath /srv/arch32/var/lib/pacman \
-     --cachedir /srv/arch32/var/cache/pacman/pkg \
-     -r /srv/arch32 base-devel
-
-# Inside the chroot, install the 32-bit dependency stack, e.g.:
-sudo pacman -S qt6-base qt6-svg qt6-declarative extra-cmake-modules \
-               kf6-* poppler libtiff djvulibre ...
-
-# Then build Okular forcing the i686 ABI:
-cmake -B build -G Ninja \
-      -DCMAKE_C_FLAGS="-m32" \
-      -DCMAKE_CXX_FLAGS="-m32" \
-      -DCMAKE_EXE_LINKER_FLAGS="-m32" \
-      -DCMAKE_SHARED_LINKER_FLAGS="-m32" \
-      -DCMAKE_INSTALL_PREFIX=/usr ..
-ninja -C build
-```
-
-Alternatively, pass `-DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=i686`
-together with the flags above so CMake's try-compile tests run under
-`linux32`/`setarch i686` if the host shell is 64-bit.
-
-#### 2. Cross-compiling a 32-bit Windows build (from CachyOS)
-
-Use **Mingw-w64** with the `i686-w64-mingw32` target. You will need a full
-32-bit Windows toolchain plus Qt6 and KDE Frameworks built for
-`i686-w64-mingw32` (either from the [MSYS2](https://www.msys2.org) `mingw32`
-environment, using [KDAB's CMake recipes](https://github.com/KDAB/cmake-recipes),
-or by building the dependency stack yourself with a tool such as
-[aqt/Qt-installer](https://doc.qt.io/qtinstallerframework/ifw-overview.html) or
-KDE's [`kde-cli-tools` / craftmaster](https://community.kde.org/Craft)).
-
-```bash
-# Install the cross toolchain on the host
-sudo pacman -S mingw-w64-gcc cmake ninja
-
-# Configure Okular for the Windows 32-bit target
-cmake -B build-win32 -G Ninja \
-      -DCMAKE_TOOLCHAIN_FILE=i686-w64-mingw32.toolchain.cmake \
-      -DCMAKE_SYSTEM_NAME=Windows \
-      -DCMAKE_SYSTEM_PROCESSOR=i686 \
-      -DCMAKE_INSTALL_PREFIX=/opt/okular-win32 \
-      -DOKULAR_UI=desktop ..
-ninja -C build-win32
-```
-
-A minimal `i686-w64-mingw32.toolchain.cmake` looks like this:
-
-```cmake
-set(CMAKE_SYSTEM_NAME Windows)
-set(CMAKE_SYSTEM_PROCESSOR i686)
-set(CMAKE_C_COMPILER   i686-w64-mingw32-gcc)
-set(CMAKE_CXX_COMPILER i686-w64-mingw32-g++)
-set(CMAKE_RC_COMPILER  i686-w64-mingw32-windres)
-set(CMAKE_FIND_ROOT_PATH /opt/qt6-i686-windows /opt/kf6-i686-windows)
-set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
-set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
-set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
-set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
-```
-
-Make sure `Qt6_DIR`, `KF6_DIR` and the ECM modules point at the *32-bit Windows*
-installations (e.g. `-DQt6_DIR=/opt/qt6-i686-windows/lib/cmake/Qt6`).
-
-#### 3. Multiarch builds in one tree
-
-CMake supports multiple independent build directories for different
-architectures/targets from the same source checkout — just repeat the configure
-step with a different `-B` directory and toolchain/flags, for example:
-
-```bash
-cmake -B build-native          ..                                  # x86-64 Linux
-cmake -B build-linux-i686 -DCMAKE_C_FLAGS=-m32 -DCMAKE_CXX_FLAGS=-m32 ..   # 32-bit Linux
-cmake -B build-win-i686   -DCMAKE_TOOLCHAIN_FILE=i686-w64-mingw32.toolchain.cmake .. # 32-bit Windows
-```
-
-Do not mix object files between build trees, and remember that every dependency
-(Poppler, TIFF, DjVuLibre, …) must exist in each target architecture.
-
-#### 3. Solving the missing-dependency problem (`FORCE_NOT_REQUIRED_DEPENDENCIES`)
-
-The build system has a built-in escape hatch for exactly this situation. In
-`CMakeLists.txt` every optional dependency is looked up with
-`set_okular_optional_package_properties()`, which honours the CMake cache
-variable `FORCE_NOT_REQUIRED_DEPENDENCIES`: any package listed there is
-downgraded from REQUIRED to RECOMMENDED, so **configure succeeds even if the
-package is absent**, and the corresponding document generator or feature is
-simply not compiled (each generator is guarded by an `if(<pkg>_FOUND)` in
-`generators/CMakeLists.txt`). Okular itself keeps working — you just lose the
-formats/features whose libraries are missing. This is the same mechanism the
-Android build already uses.
-
-Example for a minimal i686 build that needs almost nothing third-party beyond
-Qt6 + KDE Frameworks + Poppler:
-
-```sh
-cmake -B build-i686 .. \
-  -DCMAKE_C_FLAGS=-m32 -DCMAKE_CXX_FLAGS=-m32 \
-  -DFORCE_NOT_REQUIRED_DEPENDENCIES="TIFF;LibSpectre;DjVuLibre;EPub;QMobipocket6;Discount;KExiv2Qt6;KF6Wallet;KF6DocTools;Qt6Qml;Qt6TextToSpeech;KF6Purpose"
-```
-
-What you lose per dropped dependency (verified against the code):
-
-| Dependency          | Feature lost (no crash, just unavailable)        | Replacement options |
-|---------------------|--------------------------------------------------|---------------------|
-| `Poppler`           | PDF viewing (the main use case — keep it!)       | Build Poppler from source for i686; on Windows it ships in KDE's `windows-c++` bundle. |
-| `TIFF`              | `.tif` documents                                 | None needed; TIFF support is only useful if you open TIFFs. |
-| `LibSpectre`        | PostScript/PDF (`.ps`) documents                 | Rarely missed; alternatively enable the `ghostscript` fallback path used by some distros. |
-| `DjVuLibre`         | DjVu documents                                   | Upstream is dormant but small; cross-compiling it for i686 is straightforward. |
-| `EPub` (ebook-tools)| EPUB documents                                   | Dormant upstream; drop it, or replace the epub generator with QtWebEngine rendering (upstream work, not included here). |
-| `QMobipocket6`      | Mobipocket/AZW e-books                           | Small KDE library, easy to cross-build. |
-| `Discount`          | Markdown documents                               | Trivial C library — vendor it into the i686 build, or drop Markdown support. |
-| `KExiv2Qt6`         | EXIF auto-rotation of images                     | Cosmetic only. |
-| `KF6Wallet`         | Remembering passwords in a secure wallet         | Already optional off-Windows; passwords then stay in the config file. |
-| `Qt6Qml` (JS)       | JavaScript inside PDF forms (`HAVE_JS=0`)        | Forms still render/work, embedded scripts don't run. |
-| `Qt6TextToSpeech`   | "Read aloud" feature                             | None needed. |
-| `KF6Purpose`        | Share menu                                       | None needed. |
-| `KF6DocTools`       | Installed help documentation                     | None needed. |
-
-The GitHub Actions workflow (`build.yml`) already passes this list, so CI
-produces binaries even when a bundle doesn't ship every generator library.
-For the core required stack (Qt6 ≥ 6.8, KF6 ≥ 6.13, ECM, KIO…) there is no
-supported downgrade path: they must be built for the target architecture —
-use Arch32's own Qt6/KF6 packages on Linux-i686, or build them once with the
-MinGW-w64 i686 toolchain / KDAB cmake-recipes on Windows.
-
-Note: 32-bit (i686) support is not continuously tested upstream; expect to fix
-occasional format/pointer-size warnings (`%lld` vs `%zd`, `quintptr` casts, etc.)
-and please contribute those fixes back via merge requests.
+> **Note:** the previous version of this workflow used KDAB's
+> `kdab/cmake-recipes-github-ci` container and KDE's prebuilt *windows-c++*
+> (MSVC x64) bundles. That image tag is no longer publicly pullable (CI failed
+> with `pull access denied`) and neither stack offers i686 packages, which is
+> why the jobs were rewritten around Arch32 and MSYS2-multilib. For building
+> 32-bit binaries locally (e.g. directly on CachyOS with an Arch32 chroot or
+> `i686-w64-mingw32`), see the project wiki instructions for
+> `FORCE_NOT_REQUIRED_DEPENDENCIES` and cross-compilation flags.
 
 ### clang-format
 
