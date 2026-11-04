@@ -79,6 +79,45 @@ cmake -DCMAKE_INSTALL_PREFIX=/path/to/your/install/dir -DOKULAR_UI=desktop ..
 ```
 Available options are `desktop`, `mobile`, and `both`.
 
+### Automated builds with GitHub Actions (downloadable binaries)
+
+A ready-to-use workflow is provided at `.github/workflows/build.yml`. Once you
+push this repository to GitHub, it will compile Okular on every push/pull
+request and upload the resulting **binaries as downloadable artifacts**:
+
+- **Linux (x86_64)**: built inside the KDAB `cmake-recipes` CI container
+  (Qt 6.9 + KDE Frameworks 6.13 preinstalled). Produces
+  `okular-linux-x86_64.tar.gz` (staged install tree) and, best-effort, an
+  **AppImage**.
+- **Windows (MSVC x64)**: Qt is installed with `jurplel/install-qt-action`
+  and KDE Frameworks + third-party deps (Poppler, TIFF, DjVu…) are fetched
+  from KDE's prebuilt *windows-c++* bundles on
+  `download.kde.org/stable/frameworks/<KF_VERSION>/windows/`. Produces a
+  portable `okular-windows-x86_64.zip` prepared with `windeployqt`.
+- **Releases**: pushing a tag like `v26.11.70` additionally publishes all
+  artifacts as assets of a **GitHub Release**, so anyone can download the
+  binaries from the Releases page.
+
+How to use it:
+
+```bash
+git remote add origin https://github.com/<tu-usuario>/okular.git
+git push origin master
+# o lanzarlo manualmente: Actions -> "Build Okular" -> "Run workflow"
+# (permite elegir Release / RelWithDebInfo / Debug)
+```
+
+Then go to the run's *Summary* page and download the artifacts
+(`okular-linux-x86_64`, `okular-windows-x86_64`). Artifacts from `main`/`master`
+pushes and releases are kept indefinitely if you enable artifact retention;
+PR artifacts expire after 90 days by default.
+
+> **Note:** the KDE windows-c++ bundle file names change between releases; if
+> the download step fails, open the printed index URL and adjust the pattern
+> in the "Download KDE binary frameworks" step. The 32-bit (i686) builds are
+> **not** automated here because no maintained i686 dependency stack exists on
+> GitHub runners — see the next section to build them locally.
+
 ### Building for 32-bit x86 (i686), cross-compiling for Windows and Linux
 
 By default Okular is built for the native architecture of your machine (usually
@@ -181,6 +220,53 @@ cmake -B build-win-i686   -DCMAKE_TOOLCHAIN_FILE=i686-w64-mingw32.toolchain.cmak
 
 Do not mix object files between build trees, and remember that every dependency
 (Poppler, TIFF, DjVuLibre, …) must exist in each target architecture.
+
+#### 3. Solving the missing-dependency problem (`FORCE_NOT_REQUIRED_DEPENDENCIES`)
+
+The build system has a built-in escape hatch for exactly this situation. In
+`CMakeLists.txt` every optional dependency is looked up with
+`set_okular_optional_package_properties()`, which honours the CMake cache
+variable `FORCE_NOT_REQUIRED_DEPENDENCIES`: any package listed there is
+downgraded from REQUIRED to RECOMMENDED, so **configure succeeds even if the
+package is absent**, and the corresponding document generator or feature is
+simply not compiled (each generator is guarded by an `if(<pkg>_FOUND)` in
+`generators/CMakeLists.txt`). Okular itself keeps working — you just lose the
+formats/features whose libraries are missing. This is the same mechanism the
+Android build already uses.
+
+Example for a minimal i686 build that needs almost nothing third-party beyond
+Qt6 + KDE Frameworks + Poppler:
+
+```sh
+cmake -B build-i686 .. \
+  -DCMAKE_C_FLAGS=-m32 -DCMAKE_CXX_FLAGS=-m32 \
+  -DFORCE_NOT_REQUIRED_DEPENDENCIES="TIFF;LibSpectre;DjVuLibre;EPub;QMobipocket6;Discount;KExiv2Qt6;KF6Wallet;KF6DocTools;Qt6Qml;Qt6TextToSpeech;KF6Purpose"
+```
+
+What you lose per dropped dependency (verified against the code):
+
+| Dependency          | Feature lost (no crash, just unavailable)        | Replacement options |
+|---------------------|--------------------------------------------------|---------------------|
+| `Poppler`           | PDF viewing (the main use case — keep it!)       | Build Poppler from source for i686; on Windows it ships in KDE's `windows-c++` bundle. |
+| `TIFF`              | `.tif` documents                                 | None needed; TIFF support is only useful if you open TIFFs. |
+| `LibSpectre`        | PostScript/PDF (`.ps`) documents                 | Rarely missed; alternatively enable the `ghostscript` fallback path used by some distros. |
+| `DjVuLibre`         | DjVu documents                                   | Upstream is dormant but small; cross-compiling it for i686 is straightforward. |
+| `EPub` (ebook-tools)| EPUB documents                                   | Dormant upstream; drop it, or replace the epub generator with QtWebEngine rendering (upstream work, not included here). |
+| `QMobipocket6`      | Mobipocket/AZW e-books                           | Small KDE library, easy to cross-build. |
+| `Discount`          | Markdown documents                               | Trivial C library — vendor it into the i686 build, or drop Markdown support. |
+| `KExiv2Qt6`         | EXIF auto-rotation of images                     | Cosmetic only. |
+| `KF6Wallet`         | Remembering passwords in a secure wallet         | Already optional off-Windows; passwords then stay in the config file. |
+| `Qt6Qml` (JS)       | JavaScript inside PDF forms (`HAVE_JS=0`)        | Forms still render/work, embedded scripts don't run. |
+| `Qt6TextToSpeech`   | "Read aloud" feature                             | None needed. |
+| `KF6Purpose`        | Share menu                                       | None needed. |
+| `KF6DocTools`       | Installed help documentation                     | None needed. |
+
+The GitHub Actions workflow (`build.yml`) already passes this list, so CI
+produces binaries even when a bundle doesn't ship every generator library.
+For the core required stack (Qt6 ≥ 6.8, KF6 ≥ 6.13, ECM, KIO…) there is no
+supported downgrade path: they must be built for the target architecture —
+use Arch32's own Qt6/KF6 packages on Linux-i686, or build them once with the
+MinGW-w64 i686 toolchain / KDAB cmake-recipes on Windows.
 
 Note: 32-bit (i686) support is not continuously tested upstream; expect to fix
 occasional format/pointer-size warnings (`%lld` vs `%zd`, `quintptr` casts, etc.)
