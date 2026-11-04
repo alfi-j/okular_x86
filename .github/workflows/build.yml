@@ -2,22 +2,10 @@
 # binaries as artifacts, downloadable from the "Summary" page of each run.
 #
 # Jobs:
-#   linux-i686    : 32-bit x86 (i686) Linux build inside an Arch32 container
-#                   (official i686 Qt6 / KDE Frameworks 6 / Poppler packages).
+#   linux-i686    : 32-bit x86 Linux build in a Debian i386 container.
 #   windows-i686  : 32-bit x86 Windows build with the MinGW-w64 i686 toolchain
-#                   from MSYS2 (all deps come from `pacman -m32`, i.e. the
-#                   mingw-w64-i686-* packages — never x64 binaries).
-#   release       : on tags (v*), turns the artifacts into a GitHub Release
-#                   so the binaries appear in the "Releases" section.
-#
-# Why not KDAB's cmake-recipes container? Its CI image tag used previously
-# (kdab/cmake-recipes-github-ci:qt6.9.1-kf6.13.0-nss-cli) is no longer
-# publicly pullable ("pull access denied"), and it only ships x86_64 anyway.
-# The jobs below use maintained, actually-available i686 dependency stacks.
-#
-# Optional generators (DjVu, EPub, Mobipocket, Markdown, PostScript, TIFF...)
-# are downgraded to non-fatal via FORCE_NOT_REQUIRED_DEPENDENCIES so missing
-# 32-bit libraries never break the core PDF/image viewing functionality.
+#                   from MSYS2.
+#   release       : on tags (v*), turns the artifacts into a GitHub Release.
 
 name: Build Okular
 
@@ -40,47 +28,33 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Optional deps downgraded to non-fatal (see set_okular_optional_package_properties
-  # in CMakeLists.txt): if one is missing at configure time, its generator is simply
-  # disabled instead of failing the build. NOTE: Poppler is intentionally NOT in
-  # this list — without it Okular loses PDF support (its main feature). The MSYS2
-  # and Arch32 repos below provide a maintained i686 poppler-qt6 package.
   SKIP_DEPS: "KF6Wallet;KF6DocTools;Qt6Qml;TIFF;LibSpectre;KExiv2Qt6;DjVuLibre;EPub;QMobipocket6;Discount;Qt6TextToSpeech;KF6Purpose"
 
 jobs:
   # -------------------------------------------------------------------------
-  # Linux i686 (32-bit x86) native build -> tarball + AppImage
-  # Runs in the official Arch32 image, which provides native i686 packages
-  # for Qt6, KDE Frameworks 6, Poppler, freetype, fontconfig, etc.
+  # Linux i686 (32-bit x86) build using Debian's i386 userspace.
   # -------------------------------------------------------------------------
   linux-i686:
     name: Linux (i686 / 32-bit)
     runs-on: ubuntu-24.04
     container:
-      image: archlinux32/archlinux32:latest
+      image: i386/debian:trixie-slim
     steps:
-      - name: Sync package database and install toolchain + runtime deps
+      - name: Install build dependencies
         run: |
-          # Arch32 keyring must be trusted before anything else installs
-          pacman -Sy --noconfirm --needed archlinux32-keyring-transition || true
-          pacman -Syu --noconfirm --needed \
-            base-devel cmake ninja git \
-            qt6-base qt6-svg qt6-declarative qt5compat qt6-tools \
-            kde-frameworks-kcoreaddons kde-frameworks-kconfigwidgets \
-            kde-frameworks-kcmutils kde-frameworks-kiconthemes \
-            kde-frameworks-kio kde-frameworks-kjobwidgets \
-            kde-frameworks-kparts kde-frameworks-kdbusaddons \
-            kde-frameworks-kxmlgui kde-frameworks-kbookmarks \
-            kde-frameworks-knotifications kde-frameworks-kitemviews \
-            kde-frameworks-solid kde-frameworks-ktextwidgets \
-            kde-frameworks-kwidgetsaddons kde-frameworks-kcompletion \
-            kde-frameworks-kconfig kde-frameworks-kguiaddons \
-            kde-frameworks-kcolorscheme kde-frameworks-kcrash \
-            kde-frameworks-kidletime kde-frameworks-kirigen \
-            poppler-qt6 libtiff libspectre djvulibre ebook-tools \
-            discount kexiv2 qmobipocket speech-dispatcher \
-            extra-cmake-modules desktop-file-utils shared-mime-info
-        continue-on-error: true
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build git pkg-config wget ca-certificates \
+            extra-cmake-modules \
+            qt6-base-dev qt6-declarative-dev qt6-svg-dev qt6-tools-dev \
+            libkf6bookmarks-dev libkf6completion-dev libkf6config-dev \
+            libkf6configwidgets-dev libkf6coreaddons-dev libkf6crash-dev \
+            libkf6dbusaddons-dev libkf6guiaddons-dev libkf6i18n-dev \
+            libkf6iconthemes-dev libkf6itemviews-dev libkf6jobwidgets-dev \
+            libkf6kcmutils-dev libkf6kio-dev libkf6notifications-dev \
+            libkf6parts-dev libkf6service-dev libkf6solid-dev \
+            libkf6textwidgets-dev libkf6widgetsaddons-dev libkf6xmlgui-dev \
+            libpoppler-qt6-dev
 
       - uses: actions/checkout@v4
 
@@ -107,11 +81,10 @@ jobs:
       - name: Package (AppImage, best effort)
         continue-on-error: true
         run: |
-          # linuxdeploy has no official i686 build; try it, fall back silently
           wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-i686.AppImage || exit 0
           chmod +x linuxdeploy-i686.AppImage
           ./linuxdeploy-i686.AppImage --appdir AppDir \
-            -d $(find build install-root -name '*okular*.desktop' | head -1) \
+            -d "$(find build install-root -name '*okular*.desktop' | head -1)" \
             --output appimage
 
       - name: Upload binaries
@@ -124,10 +97,7 @@ jobs:
           if-no-files-found: error
 
   # -------------------------------------------------------------------------
-  # Windows i686 (32-bit x86) cross-build with MinGW-w64 (UCRT)
-  # All dependencies come from MSYS2's *multilib* i686 packages via
-  # `pacman -m32` (mingw-w64-i686-*): Qt6, KDE Frameworks 6, poppler-qt6,
-  # FreeDSPdfium, DjVuLibre, TIFF... — no x64 binaries are involved.
+  # Windows i686 (32-bit x86) cross-build with MinGW-w64.
   # -------------------------------------------------------------------------
   windows-i686:
     name: Windows (i686 / 32-bit MinGW)
@@ -142,7 +112,7 @@ jobs:
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW32
-          release: false          # faster cold start; update below anyway
+          release: false
           install: >-
             mingw-w64-i686-toolchain
             mingw-w64-i686-cmake
@@ -155,8 +125,9 @@ jobs:
           # Activate the [mingw32] repos (adds "-m32" support in pacman)
           sed -i 's|^[#]*\[mingw32\]|[mingw32]|; s|^Include = .*mingw64.*|Include = /etc/pacman.d/mirrorlist|' \
             /etc/pacman.conf
-          # Ensure the multilib hook exists
-          pacman -Sy --nochange-permissions --noconfirm --needed \
+          # Install required MSYS2 utilities. Do not pass --nochange-permissions:
+          # this pacman version does not recognize that option.
+          pacman -Sy --noconfirm --needed \
             msys2-runtime man-db p7zip zip
           # Core stack, ALL i686:
           pacman -S -m32 --noconfirm --needed \
@@ -205,13 +176,13 @@ jobs:
       - name: Report enabled generators
         run: cmake -L build | grep -i '^OKULAR_GENERATOR_' || true
 
-      - name: Package portable ZIP (windeployqt makes it self-contained)
+      - name: Package portable ZIP
         run: |
           mkdir -p dist
           DESTDIR="$PWD/distroot" cmake --install build
           cp -r distroot/opt/okular/* dist/
-          # windeployqt (the i686 one!) copies Qt plugins/DLLs next to the exe
-          "$MINGW_PREFIX/bin/windeployqt.exe" --compiler-runtime dist/opt/okular/bin/okular.exe || true
+          # windeployqt (the i686 one!) copies Qt plugins/DLLs beside the executable.
+          "$MINGW_PREFIX/bin/windeployqt.exe" --compiler-runtime dist/bin/okular.exe || true
           (cd dist && zip -r ../okular-windows-i686.zip .)
 
       - name: Upload binaries
@@ -222,7 +193,7 @@ jobs:
           if-no-files-found: error
 
   # -------------------------------------------------------------------------
-  # On tag pushes: publish artifacts as a GitHub Release (downloadable assets)
+  # On tag pushes: publish artifacts as a GitHub Release.
   # -------------------------------------------------------------------------
   release:
     name: Publish release
