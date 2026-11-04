@@ -1,0 +1,186 @@
+# GitHub Actions workflow that builds Okular and uploads the resulting
+# binaries as artifacts, downloadable from the "Summary" page of each run.
+#
+# Jobs:
+#   linux-x86_64 : native 64-bit Linux build (AppImage + tarball) using the
+#                  KDAB cmake-recipes stack (Qt6 + KDE Frameworks 6).
+#   windows-msvc : native Windows x64 build using jurplel/install-qt-action
+#                  plus KDE's prebuilt "binary windows-c++" frameworks.
+#   release      : on tags (v*), turns the artifacts into a GitHub Release
+#                  so the binaries appear in the "Releases" section.
+#
+# NOTE about 32-bit (i686) builds: there is no maintained i686 dependency
+# stack (Qt6/KF6/Poppler) on GitHub runners or in KDE's binary bundles, so
+# they cannot be built here out of the box. See README.md, section
+# "Building for 32-bit x86 (i686), cross-compiling for Windows and Linux",
+# which explains how to do it locally (Arch32 chroot / MinGW-w64 i686).
+
+name: Build Okular
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'CMake build type'
+        required: true
+        default: 'Release'
+        type: choice
+        options: [Release, RelWithDebInfo, Debug]
+  push:
+    branches: [master, main]
+    tags: ['v*']
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  QT_VERSION: '6.9.1'
+  KF_VERSION: '6.13'   # matches KF_REQUIRED_VERSION in CMakeLists.txt
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Native Linux x86_64 build -> AppImage + installable tarball
+  # -------------------------------------------------------------------------
+  linux-x86_64:
+    name: Linux (x86_64)
+    runs-on: ubuntu-24.04
+    container:
+      image: kdab/cmake-recipes-github-ci:qt6.9.1-kf6.13.0-nss-cli
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure Okular
+        run: |
+          cmake -B build -S . -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ github.event.inputs.build_type || 'Release' }} \
+            -DCMAKE_INSTALL_PREFIX=/usr \
+            -DKDE_SKIP_TEST_SCRIPT=ON \
+            -DOKULAR_UI=desktop
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Package (tarball)
+        run: |
+          DESTDIR=$PWD/install-root cmake --install build
+          tar -C install-root -czf okular-linux-x86_64.tar.gz .
+
+      - name: Package (AppImage, best effort)
+        continue-on-error: true
+        run: |
+          apt-get update && apt-get install -y wget fuse || true
+          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          wget -q https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+          chmod +x linuxdeploy*.AppImage
+          DESKTOP=$(find build install-root -name '*okular*.desktop' | head -1)
+          ./linuxdeploy-x86_64.AppImage --appdir AppDir -d "$DESKTOP" \
+            --plugin qt --output appimage
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: okular-linux-x86_64
+          path: |
+            okular-linux-x86_64.tar.gz
+            *.AppImage
+          if-no-files-found: error
+
+  # -------------------------------------------------------------------------
+  # Native Windows x86_64 build (MSVC + KDE binary frameworks)
+  # -------------------------------------------------------------------------
+  windows-msvc:
+    name: Windows (MSVC x64)
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: win64_msvc2022_64
+          modules: qtsvg qt5compat qttools qtdeclarative qtmultimedia
+          cache: true
+
+      - name: Download KDE binary frameworks (windows-c++)
+        shell: pwsh
+        run: |
+          # Prebuilt KF6 + third-party deps matching Qt/MSVC. Index of files:
+          # https://download.kde.org/stable/frameworks/<kf>/windows/
+          $base = 'https://download.kde.org/stable/frameworks/${{ env.KF_VERSION }}/windows'
+          $idx  = (Invoke-WebRequest -UseBasicParsing -Uri "$base/").Content
+          $file = ([regex]'href="(kde-msvc[^"]+\.7z)"' | Match $idx).Groups[1].Value | Select-Object -First 1
+          if (-not $file) { throw "No windows-c++ bundle found at $base" }
+          Write-Host "Downloading $file"
+          Invoke-WebRequest -UseBasicParsing -Uri "$base/$file" -OutFile kf6.7z
+          & 'C:\Program Files\7-Zip\7z.exe' x "-oC:\kdewin" kf6.7z | Out-Null
+
+      - name: Install extra dependencies via vcpkg-style helpers
+        shell: pwsh
+        run: |
+          # poppler-qt6, djvulibre, tiff etc. ship inside the KDE windows-c++
+          # bundle (deps-qt6-windows.7z); extract it alongside if present.
+          $base = 'https://download.kde.org/stable/frameworks/${{ env.KF_VERSION }}/windows'
+          try {
+            Invoke-WebRequest -UseBasicParsing -Uri "$base/deps-qt${{ env.QT_VERSION }}-windows.7z" -OutFile deps.7z
+            & 'C:\Program Files\7-Zip\7z.exe' x "-oC:\kdewin" deps.7z | Out-Null
+          } catch { Write-Host "::warning::deps bundle not found, relying on main bundle only" }
+
+      - name: Configure Okular
+        shell: cmd
+        run: |
+          cmake -B build -S . -G Ninja ^
+            -DCMAKE_BUILD_TYPE=${{ github.event.inputs.build_type || 'Release' }} ^
+            -DCMAKE_PREFIX_PATH=C:/kdewin ^
+            -DOKULAR_UI=desktop ^
+            -DBUILD_WITH_QT6=ON
+
+      - name: Build
+        shell: cmd
+        run: cmake --build build --parallel
+
+      - name: Package portable ZIP
+        shell: pwsh
+        run: |
+          # windeployqt makes the app runnable without installing anything
+          $windeploy = Get-ChildItem -Recurse -Filter windeployqt.exe `
+              -Path (Split-Path (Get-Command qmake | Split-Path)) -ErrorAction SilentlyContinue | Select-Object -First 1
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item build\bin\okular.exe, build\bin\*.dll dist -ErrorAction SilentlyContinue
+          Copy-Item build\bin -Recurse -Destination dist -ErrorAction SilentlyContinue
+          if ($windeploy) { & $windeploy.FullName dist\okular.exe }
+          Compress-Archive -Path dist\* -DestinationPath okular-windows-x86_64.zip
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: okular-windows-x86_64
+          path: okular-windows-x86_64.zip
+          if-no-files-found: error
+
+  # -------------------------------------------------------------------------
+  # On tag pushes: publish artifacts as a GitHub Release (downloadable assets)
+  # -------------------------------------------------------------------------
+  release:
+    name: Publish release
+    needs: [linux-x86_64, windows-msvc]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release with binaries
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true

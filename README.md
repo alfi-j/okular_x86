@@ -79,6 +79,45 @@ cmake -DCMAKE_INSTALL_PREFIX=/path/to/your/install/dir -DOKULAR_UI=desktop ..
 ```
 Available options are `desktop`, `mobile`, and `both`.
 
+### Automated builds with GitHub Actions (downloadable binaries)
+
+A ready-to-use workflow is provided at `.github/workflows/build.yml`. Once you
+push this repository to GitHub, it will compile Okular on every push/pull
+request and upload the resulting **binaries as downloadable artifacts**:
+
+- **Linux (x86_64)**: built inside the KDAB `cmake-recipes` CI container
+  (Qt 6.9 + KDE Frameworks 6.13 preinstalled). Produces
+  `okular-linux-x86_64.tar.gz` (staged install tree) and, best-effort, an
+  **AppImage**.
+- **Windows (MSVC x64)**: Qt is installed with `jurplel/install-qt-action`
+  and KDE Frameworks + third-party deps (Poppler, TIFF, DjVu…) are fetched
+  from KDE's prebuilt *windows-c++* bundles on
+  `download.kde.org/stable/frameworks/<KF_VERSION>/windows/`. Produces a
+  portable `okular-windows-x86_64.zip` prepared with `windeployqt`.
+- **Releases**: pushing a tag like `v26.11.70` additionally publishes all
+  artifacts as assets of a **GitHub Release**, so anyone can download the
+  binaries from the Releases page.
+
+How to use it:
+
+```bash
+git remote add origin https://github.com/<tu-usuario>/okular.git
+git push origin master
+# o lanzarlo manualmente: Actions -> "Build Okular" -> "Run workflow"
+# (permite elegir Release / RelWithDebInfo / Debug)
+```
+
+Then go to the run's *Summary* page and download the artifacts
+(`okular-linux-x86_64`, `okular-windows-x86_64`). Artifacts from `main`/`master`
+pushes and releases are kept indefinitely if you enable artifact retention;
+PR artifacts expire after 90 days by default.
+
+> **Note:** the KDE windows-c++ bundle file names change between releases; if
+> the download step fails, open the printed index URL and adjust the pattern
+> in the "Download KDE binary frameworks" step. The 32-bit (i686) builds are
+> **not** automated here because no maintained i686 dependency stack exists on
+> GitHub runners — see the next section to build them locally.
+
 ### Building for 32-bit x86 (i686), cross-compiling for Windows and Linux
 
 By default Okular is built for the native architecture of your machine (usually
