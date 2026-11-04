@@ -99,7 +99,7 @@ jobs:
   # -------------------------------------------------------------------------
   # Windows i686 (32-bit x86) cross-build with MinGW-w64.
   # -------------------------------------------------------------------------
-  windows-i686:
+    windows-i686:
     name: Windows (i686 / 32-bit MinGW)
     runs-on: windows-latest
     defaults:
@@ -108,54 +108,43 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up MSYS2 with i686 (32-bit) toolchain
+      - name: Set up MSYS2 with i686 toolchain and dependencies
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW32
-          release: false
+          update: true
           install: >-
+            base-devel
+            git
+            unzip
+            p7zip
+            zip
             mingw-w64-i686-toolchain
             mingw-w64-i686-cmake
             mingw-w64-i686-ninja
-            git
-            unzip
-
-      - name: Enable multilib and install 32-bit Qt6 / KF6 / Okular deps
-        run: |
-          # Activate the [mingw32] repos (adds "-m32" support in pacman)
-          sed -i 's|^[#]*\[mingw32\]|[mingw32]|; s|^Include = .*mingw64.*|Include = /etc/pacman.d/mirrorlist|' \
-            /etc/pacman.conf
-          # Install required MSYS2 utilities. Do not pass --nochange-permissions:
-          # this pacman version does not recognize that option.
-          pacman -Sy --noconfirm --needed \
-            msys2-runtime man-db p7zip zip
-          # Core stack, ALL i686:
-          pacman -S -m32 --noconfirm --needed \
-            mingw-w64-i686-qt6-base \
-            mingw-w64-i686-qt6-svg \
-            mingw-w64-i686-qt6-declarative \
-            mingw-w64-i686-qt6-tools \
-            mingw-w64-i686-qt5compat \
-            mingw-w64-i686-extra-cmake-modules \
-            mingw-w64-i686-kde-frameworks \
-            mingw-w64-i686-poppler-qt6 \
-            mingw-w64-i686-freedsp-pdfium \
-            mingw-w64-i686-tiff \
-            mingw-w64-i686-djvulibre \
-            mingw-w64-i686-libepub \
-            mingw-w64-i686-qmobipocket \
-            mingw-w64-i686-discount \
-            mingw-w64-i686-kexiv2 \
-            mingw-w64-i686-libspectre \
-            mingw-w64-i686-speecheasy \
-            mingw-w64-i686-zip \
+            mingw-w64-i686-qt6-base
+            mingw-w64-i686-qt6-svg
+            mingw-w64-i686-qt6-declarative
+            mingw-w64-i686-qt6-tools
+            mingw-w64-i686-qt5compat
+            mingw-w64-i686-extra-cmake-modules
+            mingw-w64-i686-kde-frameworks
+            mingw-w64-i686-poppler-qt6
+            mingw-w64-i686-freedsp-pdfium
+            mingw-w64-i686-tiff
+            mingw-w64-i686-djvulibre
+            mingw-w64-i686-libepub
+            mingw-w64-i686-qmobipocket
+            mingw-w64-i686-discount
+            mingw-w64-i686-kexiv2
+            mingw-w64-i686-libspectre
+            mingw-w64-i686-speecheasy
             mingw-w64-i686-pkg-config
 
       - name: Verify we really have a 32-bit compiler
         run: |
           i686-w64-mingw32-gcc -dumpmachine
           i686-w64-mingw32-gcc -dM -E - </dev/null | grep -E '__SIZEOF_POINTER__|_WIN64' && exit 1 || true
-          # __SIZEOF_POINTER__ must be 4 and _WIN64 must NOT be defined:
           i686-w64-mingw32-gcc -dM -E - </dev/null | grep '__SIZEOF_POINTER__ 4'
           echo "OK: targeting 32-bit Windows (i686)"
 
@@ -181,7 +170,6 @@ jobs:
           mkdir -p dist
           DESTDIR="$PWD/distroot" cmake --install build
           cp -r distroot/opt/okular/* dist/
-          # windeployqt (the i686 one!) copies Qt plugins/DLLs beside the executable.
           "$MINGW_PREFIX/bin/windeployqt.exe" --compiler-runtime dist/bin/okular.exe || true
           (cd dist && zip -r ../okular-windows-i686.zip .)
 
