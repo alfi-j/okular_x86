@@ -2,10 +2,10 @@
 # binaries as artifacts, downloadable from the "Summary" page of each run.
 #
 # Jobs:
-#   linux-i686    : 32-bit x86 Linux build in a Debian i386 container.
 #   windows-i686  : 32-bit x86 Windows build with the MinGW-w64 i686 toolchain
 #                   from MSYS2.
 #   release       : on tags (v*), turns the artifacts into a GitHub Release.
+
 name: Build Okular
 
 on:
