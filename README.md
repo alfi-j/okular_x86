@@ -221,6 +221,53 @@ cmake -B build-win-i686   -DCMAKE_TOOLCHAIN_FILE=i686-w64-mingw32.toolchain.cmak
 Do not mix object files between build trees, and remember that every dependency
 (Poppler, TIFF, DjVuLibre, …) must exist in each target architecture.
 
+#### 3. Solving the missing-dependency problem (`FORCE_NOT_REQUIRED_DEPENDENCIES`)
+
+The build system has a built-in escape hatch for exactly this situation. In
+`CMakeLists.txt` every optional dependency is looked up with
+`set_okular_optional_package_properties()`, which honours the CMake cache
+variable `FORCE_NOT_REQUIRED_DEPENDENCIES`: any package listed there is
+downgraded from REQUIRED to RECOMMENDED, so **configure succeeds even if the
+package is absent**, and the corresponding document generator or feature is
+simply not compiled (each generator is guarded by an `if(<pkg>_FOUND)` in
+`generators/CMakeLists.txt`). Okular itself keeps working — you just lose the
+formats/features whose libraries are missing. This is the same mechanism the
+Android build already uses.
+
+Example for a minimal i686 build that needs almost nothing third-party beyond
+Qt6 + KDE Frameworks + Poppler:
+
+```sh
+cmake -B build-i686 .. \
+  -DCMAKE_C_FLAGS=-m32 -DCMAKE_CXX_FLAGS=-m32 \
+  -DFORCE_NOT_REQUIRED_DEPENDENCIES="TIFF;LibSpectre;DjVuLibre;EPub;QMobipocket6;Discount;KExiv2Qt6;KF6Wallet;KF6DocTools;Qt6Qml;Qt6TextToSpeech;KF6Purpose"
+```
+
+What you lose per dropped dependency (verified against the code):
+
+| Dependency          | Feature lost (no crash, just unavailable)        | Replacement options |
+|---------------------|--------------------------------------------------|---------------------|
+| `Poppler`           | PDF viewing (the main use case — keep it!)       | Build Poppler from source for i686; on Windows it ships in KDE's `windows-c++` bundle. |
+| `TIFF`              | `.tif` documents                                 | None needed; TIFF support is only useful if you open TIFFs. |
+| `LibSpectre`        | PostScript/PDF (`.ps`) documents                 | Rarely missed; alternatively enable the `ghostscript` fallback path used by some distros. |
+| `DjVuLibre`         | DjVu documents                                   | Upstream is dormant but small; cross-compiling it for i686 is straightforward. |
+| `EPub` (ebook-tools)| EPUB documents                                   | Dormant upstream; drop it, or replace the epub generator with QtWebEngine rendering (upstream work, not included here). |
+| `QMobipocket6`      | Mobipocket/AZW e-books                           | Small KDE library, easy to cross-build. |
+| `Discount`          | Markdown documents                               | Trivial C library — vendor it into the i686 build, or drop Markdown support. |
+| `KExiv2Qt6`         | EXIF auto-rotation of images                     | Cosmetic only. |
+| `KF6Wallet`         | Remembering passwords in a secure wallet         | Already optional off-Windows; passwords then stay in the config file. |
+| `Qt6Qml` (JS)       | JavaScript inside PDF forms (`HAVE_JS=0`)        | Forms still render/work, embedded scripts don't run. |
+| `Qt6TextToSpeech`   | "Read aloud" feature                             | None needed. |
+| `KF6Purpose`        | Share menu                                       | None needed. |
+| `KF6DocTools`       | Installed help documentation                     | None needed. |
+
+The GitHub Actions workflow (`build.yml`) already passes this list, so CI
+produces binaries even when a bundle doesn't ship every generator library.
+For the core required stack (Qt6 ≥ 6.8, KF6 ≥ 6.13, ECM, KIO…) there is no
+supported downgrade path: they must be built for the target architecture —
+use Arch32's own Qt6/KF6 packages on Linux-i686, or build them once with the
+MinGW-w64 i686 toolchain / KDAB cmake-recipes on Windows.
+
 Note: 32-bit (i686) support is not continuously tested upstream; expect to fix
 occasional format/pointer-size warnings (`%lld` vs `%zd`, `quintptr` casts, etc.)
 and please contribute those fixes back via merge requests.

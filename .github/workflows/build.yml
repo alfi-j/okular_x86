@@ -51,13 +51,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install optional third-party generators (Ubuntu 24.04 has i686 too)
+        run: |
+          apt-get update
+          apt-get install -y libtiff-dev libspectre-dev libdjvulibre-dev \
+            ebook-tools-dev libqmobipocket-dev discount libkexiv2-dev
+
       - name: Configure Okular
         run: |
           cmake -B build -S . -G Ninja \
             -DCMAKE_BUILD_TYPE=${{ github.event.inputs.build_type || 'Release' }} \
             -DCMAKE_INSTALL_PREFIX=/usr \
             -DKDE_SKIP_TEST_SCRIPT=ON \
-            -DOKULAR_UI=desktop
+            -DOKULAR_UI=desktop \
+            -DFORCE_NOT_REQUIRED_DEPENDENCIES="Poppler;KF6Wallet;KF6DocTools;Qt6Qml;TIFF;LibSpectre;KExiv2Qt6;DjVuLibre;EPub;QMobipocket6;Discount;Qt6TextToSpeech;KF6Purpose"
 
       - name: Build
         run: cmake --build build --parallel
@@ -138,7 +145,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=${{ github.event.inputs.build_type || 'Release' }} ^
             -DCMAKE_PREFIX_PATH=C:/kdewin ^
             -DOKULAR_UI=desktop ^
-            -DBUILD_WITH_QT6=ON
+            -DFORCE_NOT_REQUIRED_DEPENDENCIES="Poppler;KF6Wallet;KF6DocTools;Qt6Qml;TIFF;LibSpectre;KExiv2Qt6;DjVuLibre;EPub;QMobipocket6;Discount;Qt6TextToSpeech;KF6Purpose"
 
       - name: Build
         shell: cmd
